@@ -5,10 +5,13 @@ import streamlit as st
 
 import ai
 import db
+import files
 import seed
 
 st.set_page_config(page_title="Rata", page_icon="⚖️", layout="wide")
 db.init_db()
+
+NAV = ["1 · Buat Proyek", "2 · Dashboard", "3 · Laporan"]
 
 STATUS_EMOJI = {
     "TODO": "⬜",
@@ -58,7 +61,101 @@ def _save_draft():
     st.session_state["project_id"] = pid
     st.session_state["project_select"] = pid
     st.session_state.pop("draft", None)
+    st.session_state["desc_store"] = ""
+    st.session_state.pop("desc_input", None)
+    st.session_state.pop("file_note", None)
     st.session_state["flash"] = "Proyek berhasil dibuat. Buka tab Dashboard."
+
+
+def _goto(name: str):
+    st.session_state["nav"] = name
+
+
+def _set_status(task_id: str, status: str):
+    member_id = st.session_state.get("chat_member")
+    db.update_task_status(task_id, status, member_id)
+    db.log_event(task_id, member_id, status)
+    st.session_state["flash_status"] = {
+        "task_id": task_id,
+        "status": status,
+        "message": f"Status tugas diubah menjadi: {STATUS_LABEL.get(status, status)}.",
+    }
+    st.session_state["nav"] = NAV[1]
+
+
+def _send_reply(task_id: str):
+    text = (st.session_state.get(f"free_{task_id}") or "").strip()
+    if not text:
+        st.session_state["flash_status"] = {
+            "task_id": task_id,
+            "status": "error",
+            "message": "Tulis balasan dulu sebelum mengirim.",
+        }
+        st.session_state["nav"] = NAV[1]
+        return
+    member_id = st.session_state.get("chat_member")
+    tasks = db.get_tasks(st.session_state.get("project_id") or "")
+    title = next((t["title"] for t in tasks if t["id"] == task_id), "Tugas")
+    parsed = ai.parse_reply(text, title)
+    db.update_task_status(task_id, parsed["intent"], member_id, note=parsed["reason"])
+    db.log_event(task_id, member_id, parsed["intent"], parsed["reason"])
+    st.session_state["flash_status"] = {
+        "task_id": task_id,
+        "status": parsed["intent"],
+        "message": f"AI memahami balasan sebagai {STATUS_LABEL.get(parsed['intent'], parsed['intent'])} — {parsed['reason']}",
+    }
+    st.session_state["nav"] = NAV[1]
+
+
+def _mark_done(task_id: str):
+    url = (st.session_state.get(f"ev_{task_id}") or "").strip()
+    if not url:
+        st.session_state["flash_status"] = {
+            "task_id": task_id,
+            "status": "error",
+            "message": "Tautan bukti wajib diisi sebelum menandai selesai.",
+        }
+        st.session_state["nav"] = NAV[1]
+        return
+    member_id = st.session_state.get("chat_member")
+    db.update_task_status(task_id, "DONE", member_id, evidence_url=url)
+    db.log_event(task_id, member_id, "DONE", url)
+    st.session_state["flash_status"] = {
+        "task_id": task_id,
+        "status": "DONE",
+        "message": "Tugas selesai dan buktinya tercatat.",
+    }
+    st.session_state["nav"] = NAV[1]
+
+
+def _simulate_24h():
+    pid = st.session_state.get("project_id")
+    if pid:
+        changed = db.mark_escalated(pid)
+        st.session_state["flash"] = f"{changed} tugas ditandai tidak merespons."
+    st.session_state["nav"] = NAV[1]
+
+
+def _load_file():
+    up = st.session_state.get("upload")
+    if not up:
+        return
+    text, note = files.extract_text(up.name, up.getvalue())
+    if note:
+        st.session_state["file_note"] = ("warning", note)
+    else:
+        st.session_state["desc_store"] = text
+        st.session_state.pop("desc_input", None)
+        st.session_state["file_note"] = (
+            "success",
+            f"{up.name} terbaca: {len(text)} karakter. Periksa kolom deskripsi sebelum membuat rencana.",
+        )
+
+
+def _clear_file():
+    st.session_state["desc_store"] = ""
+    st.session_state.pop("desc_input", None)
+    st.session_state["file_note"] = ("info", "Isi file dihapus dari deskripsi.")
 
 
 def build_report(project: dict, df: pd.DataFrame, total_tasks: int) -> str:
@@ -112,17 +209,62 @@ flash = st.session_state.pop("flash", None)
 if flash:
     st.success(flash)
 
-tab1, tab2, tab3 = st.tabs(["1 · Buat Proyek", "2 · Dashboard", "3 · Laporan"])
+nav = st.radio(
+    "Navigasi",
+    NAV,
+    horizontal=True,
+    label_visibility="collapsed",
+    key="nav",
+)
+
 # ------------------------------------------------------------------ tab 1
-with tab1:
+if nav == NAV[0]:
     st.subheader("Buat proyek tugas kelompok")
+
+    if st.session_state.get("draft"):
+        st.info(
+            f"Rencana untuk \"{st.session_state['draft']['title']}\" sudah siap. "
+            "Gulir ke bawah untuk menyimpan, atau buat rencana baru di bawah ini."
+        )
 
     with st.container(border=True):
         title = st.text_input("Judul proyek", placeholder="Makalah Manajemen Strategi")
+
+        st.markdown("**Bahan tugas**")
+        st.caption("Unggah file tugas (PDF, DOCX, TXT, MD) atau tempel deskripsinya langsung.")
+        up = st.file_uploader(
+            "Unggah file tugas",
+            type=["pdf", "docx", "txt", "md"],
+            key="upload",
+            label_visibility="collapsed",
+        )
+        u1, u2 = st.columns([1, 1])
+        u1.button("Baca file", width="stretch", on_click=_load_file, disabled=up is None)
+        u2.button("Hapus isi file", width="stretch", on_click=_clear_file)
+
+        note = st.session_state.get("file_note")
+        if note:
+            kind, msg = note
+            if kind == "success":
+                st.success(msg)
+            elif kind == "warning":
+                st.warning(msg)
+            else:
+                st.info(msg)
+
+        if "desc_store" not in st.session_state:
+            st.session_state["desc_store"] = ""
+        if "desc_input" not in st.session_state:
+            st.session_state["desc_input"] = st.session_state["desc_store"]
+
         desc = st.text_area(
             "Deskripsi tugas",
+            key="desc_input",
+            height=170,
             placeholder="Contoh: Makalah 20 halaman tentang analisis strategi perusahaan teknologi",
         )
+        st.session_state["desc_store"] = desc
+
         deadline = st.date_input("Deadline", value=date.today() + timedelta(days=7))
         n = int(st.number_input("Jumlah anggota", min_value=1, max_value=5, value=3))
 
@@ -180,7 +322,7 @@ with tab1:
         c2.button("Batalkan", width="stretch", on_click=_clear_draft)
 
 # ------------------------------------------------------------------ tab 2
-with tab2:
+if nav == NAV[1]:
     pid = current_project_id()
     project = db.get_project(pid) if pid else None
 
@@ -206,11 +348,11 @@ with tab2:
         left, right = st.columns([1, 1.4])
         with left:
             st.markdown("#### Kontribusi")
-            if not df.empty:
+            if not df.empty and float(df["done_hours"].sum()) > 0:
                 st.bar_chart(df.set_index("name")["kontribusi"], height=260)
                 st.caption("Dihitung dari jam tugas yang benar-benar selesai.")
             else:
-                st.caption("Belum ada data.")
+                st.info("Belum ada tugas yang selesai. Kontribusi muncul setelah tugas pertama ditandai selesai dengan bukti.")
 
         with right:
             st.markdown("#### Tugas")
@@ -233,10 +375,14 @@ with tab2:
         with col_a:
             st.markdown("#### Kirim ke Anggota · Panel Chat")
         with col_b:
-            if st.button("Simulasikan 24 Jam", width="stretch"):
-                changed = db.mark_escalated(pid)
-                st.toast(f"{changed} tugas ditandai tidak merespons")
-                st.rerun()
+            st.button("Simulasikan 24 Jam", width="stretch", on_click=_simulate_24h)
+
+        flash_status = st.session_state.pop("flash_status", None)
+        if flash_status:
+            if flash_status["status"] == "error":
+                st.error(flash_status["message"])
+            else:
+                st.success(flash_status["message"])
 
         if not members:
             st.info("Belum ada anggota.")
@@ -266,54 +412,55 @@ with tab2:
                         st.success("Tugas ini sudah selesai dan buktinya tercatat.")
                     else:
                         b1, b2, b3 = st.columns(3)
-                        if b1.button("SIAP", key=f"ready_{t['id']}", width="stretch"):
-                            db.update_task_status(t["id"], "READY", member_id)
-                            db.log_event(t["id"], member_id, "READY")
-                            st.rerun()
-                        if b2.button("BUTUH BANTUAN", key=f"help_{t['id']}", width="stretch"):
-                            db.update_task_status(t["id"], "HELP", member_id)
-                            db.log_event(t["id"], member_id, "HELP")
-                            st.rerun()
-                        if b3.button("TIDAK BISA", key=f"decline_{t['id']}", width="stretch"):
-                            db.update_task_status(t["id"], "DECLINED", member_id)
-                            db.log_event(t["id"], member_id, "DECLINED")
-                            st.rerun()
+                        b1.button(
+                            "SIAP",
+                            key=f"ready_{t['id']}",
+                            width="stretch",
+                            on_click=_set_status,
+                            args=(t["id"], "READY"),
+                        )
+                        b2.button(
+                            "BUTUH BANTUAN",
+                            key=f"help_{t['id']}",
+                            width="stretch",
+                            on_click=_set_status,
+                            args=(t["id"], "HELP"),
+                        )
+                        b3.button(
+                            "TIDAK BISA",
+                            key=f"decline_{t['id']}",
+                            width="stretch",
+                            on_click=_set_status,
+                            args=(t["id"], "DECLINED"),
+                        )
 
-                        free = st.text_input(
+                        st.text_input(
                             "atau balas dengan kalimat sendiri",
                             key=f"free_{t['id']}",
                             placeholder="Contoh: aku baru bisa minggu depan, lagi ada praktikum",
                         )
-                        if st.button("Kirim balasan", key=f"send_{t['id']}"):
-                            if not free.strip():
-                                st.warning("Tulis balasan dulu.")
-                            else:
-                                parsed = ai.parse_reply(free, t["title"])
-                                db.update_task_status(
-                                    t["id"], parsed["intent"], member_id, note=parsed["reason"]
-                                )
-                                db.log_event(t["id"], member_id, parsed["intent"], parsed["reason"])
-                                st.toast(f"AI memahami: {parsed['intent']} — {parsed['reason']}")
-                                st.rerun()
+                        st.button(
+                            "Kirim balasan",
+                            key=f"send_{t['id']}",
+                            on_click=_send_reply,
+                            args=(t["id"],),
+                        )
 
-                        ev = st.text_input(
+                        st.text_input(
                             "Tautan bukti (wajib untuk menyelesaikan)",
                             key=f"ev_{t['id']}",
                             value=t.get("evidence_url") or "",
                             placeholder="https://docs.google.com/...",
                         )
-                        if st.button("Tandai SELESAI", key=f"done_{t['id']}"):
-                            if not ev.strip():
-                                st.warning("Tautan bukti wajib diisi sebelum menandai selesai.")
-                            else:
-                                db.update_task_status(
-                                    t["id"], "DONE", member_id, evidence_url=ev.strip()
-                                )
-                                db.log_event(t["id"], member_id, "DONE", ev.strip())
-                                st.rerun()
+                        st.button(
+                            "Tandai SELESAI",
+                            key=f"done_{t['id']}",
+                            on_click=_mark_done,
+                            args=(t["id"],),
+                        )
 
 # ------------------------------------------------------------------ tab 3
-with tab3:
+if nav == NAV[2]:
     pid = current_project_id()
     project = db.get_project(pid) if pid else None
 
