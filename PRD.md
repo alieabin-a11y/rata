@@ -66,9 +66,14 @@ Bot Telegram · login · upload file · realtime · notifikasi email · dark mod
 3. Klik "Simpan & Mulai" → dashboard aktif
 4. Anggota membalas: tombol (SIAP/BANTU/TIDAK BISA) atau kalimat bebas
 5. AI membaca balasan bebas → menentukan status + alasan
-6. Status selesai hanya bisa jika ada tautan bukti
-7. Laporan kontribusi dibuat otomatis dan bisa diunduh
+6. Anggota mengumpulkan bukti + jam aktual → status SUBMITTED
+7. Anggota lain mengonfirmasi (tidak boleh tugas sendiri) → DONE, masuk hitungan
+8. Laporan kontribusi dibuat otomatis dan bisa diunduh
 ```
+
+Identitas anggota dibawa lewat tautan `?t=<token>` yang dibagikan dari sidebar.
+Tanpa token, aplikasi berjalan sebagai pratinjau ketua dan semua aksi ditandai
+`owner_preview` di rekam jejak.
 
 ---
 
@@ -90,7 +95,9 @@ Bot Telegram · login · upload file · realtime · notifikasi email · dark mod
 - [ ] Selisih jam antar anggota ≤ 2 jam
 - [ ] Menekan tombol mengubah status di dashboard
 - [ ] Balasan bebas diproses AI
-- [ ] Status selesai terkunci tanpa tautan bukti
+- [ ] Status selesai terkunci tanpa tautan bukti + jam aktual
+- [ ] Kontribusi baru dihitung setelah dikonfirmasi anggota lain
+- [ ] Anggota tidak bisa mengonfirmasi tugasnya sendiri
 - [ ] Chart kontribusi total 100%
 - [ ] Laporan bisa diunduh `.md`
 - [ ] Tombol "Muat Data Demo" berfungsi

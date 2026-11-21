@@ -1,4 +1,5 @@
 rata.db
+rata.db.bak-*
 .streamlit/secrets.toml
 __pycache__/
 *.pyc

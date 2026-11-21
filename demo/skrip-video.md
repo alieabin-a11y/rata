@@ -15,7 +15,7 @@
 | 0:08–0:16 | Solusi | Halaman utama Rata |
 | 0:16–0:36 | Demo AI | Tab 1: form → rencana AI |
 | 0:36–0:56 | Dashboard + chat | Tab 2: metrik, chart, balasan AI |
-| 0:56–1:06 | Bukti + laporan | Tautan bukti, tab 3, unduh |
+| 0:56–1:06 | Verifikasi + laporan | Konfirmasi anggota lain, tab 3, unduh |
 | 1:06–1:15 | Dampak + penutup | Laporan / logo |
 
 ---
@@ -32,10 +32,10 @@
 > "Masukkan judul, deskripsi, deadline, dan anggota. AI memecah pekerjaan menjadi tugas yang konkret, menunjuk penanggung jawab, dan menyeimbangkan beban. Sembilan tugas, sembilan jam per orang."
 
 **[0:36–0:56] — Dashboard + chat**
-> "Dashboard menunjukkan progres dan kontribusi per anggota, dihitung dari jam tugas yang benar-benar selesai. Anggota bisa membalas dengan kalimat bebas. AI memahami niatnya dan mengubah status secara otomatis."
+> "Dashboard menunjukkan progres dan kontribusi per anggota, dihitung dari jam kerja yang sudah dikonfirmasi anggota lain — bukan estimasi AI. Anggota bisa membalas dengan kalimat bebas. AI memahami niatnya dan mengubah status secara otomatis."
 
 **[0:56–1:06] — Bukti + laporan**
-> "Tugas hanya bisa ditandai selesai jika ada tautan bukti. Laporan kontribusi dibuat otomatis dan bisa diunduh."
+> "Tugas baru dihitung setelah anggota mengumpulkan bukti dan jam aktual, lalu dikonfirmasi anggota lain. Tidak ada yang bisa mengonfirmasi tugasnya sendiri. Semua aksi masuk rekam jejak, dan laporan bisa langsung diunduh."
 
 **[1:06–1:15] — Penutup**
 > "Untuk mahasiswa, dosen, dan tim mana pun yang lelah menagih janji. Rata — bukti kontribusi, bukan janji."
@@ -50,11 +50,14 @@
 3. Tunjuk tabel rencana + kotak ringkasan biru.
 4. Klik **Simpan & Mulai**.
 5. Pindah ke tab **2 · Dashboard**. Tunjuk metrik, progress bar, chart kontribusi.
-6. Di Panel Chat: pilih anggota, klik **SIAP** pada satu tugas.
+6. Di sidebar: bagian **Simulasikan sebagai** (mode pratinjau) — pilih anggota,
+   klik **SIAP** pada satu tugas.
 7. Tulis balasan bebas di salah satu tugas, klik **Kirim balasan**, tunjukkan toast AI.
-8. Tunjukkan kolom **Tautan bukti** dan tombol **Tandai SELESAI**.
-9. Pindah ke tab **3 · Laporan**. Tunjuk tabel, total 100%, klik **Unduh laporan .md**.
-10. Selesai — tahan 2 detik di layar laporan.
+8. Isi **Tautan bukti** + **Jam kerja aktual**, klik **Kumpulkan untuk verifikasi**.
+9. Ganti **Simulasikan sebagai** ke anggota lain, lalu di bagian
+   **Menunggu konfirmasi** klik **Konfirmasi selesai** — kontribusi naik.
+10. Pindah ke tab **3 · Laporan**. Tunjuk tabel, total 100%, klik **Unduh laporan .md**.
+11. Selesai — tahan 2 detik di layar laporan.
 
 ---
 

@@ -21,6 +21,7 @@ STATUS_EMOJI = {
     "READY": "🟦",
     "HELP": "🟨",
     "DECLINED": "🟧",
+    "SUBMITTED": "🟪",
     "DONE": "🟩",
     "ESCALATED": "🟥",
 }
@@ -30,13 +31,38 @@ STATUS_LABEL = {
     "READY": "Siap dikerjakan",
     "HELP": "Butuh bantuan",
     "DECLINED": "Tidak bisa",
-    "DONE": "Selesai",
+    "SUBMITTED": "Menunggu konfirmasi",
+    "DONE": "Selesai & terverifikasi",
     "ESCALATED": "Tidak merespons",
 }
 
 
 def current_project_id():
     return st.session_state.get("project_id")
+
+
+def _actor():
+    """Identitas pelaku: dari token anggota, atau pratinjau ketua (simulasi)."""
+    if st.session_state.get("actor_source") == "token" and st.session_state.get("actor_id"):
+        return st.session_state["actor_id"], "token"
+    return st.session_state.get("act_as"), "owner_preview"
+
+
+def _actor_name() -> str:
+    actor_id, source = _actor()
+    if actor_id:
+        pid = current_project_id()
+        for m in db.get_members(pid) if pid else []:
+            if m["id"] == actor_id:
+                return m["name"]
+    return "Pratinjau ketua"
+
+
+def _is_url_valid(url: str) -> bool:
+    if len(url) < 10 or not url.startswith(("http://", "https://")):
+        return False
+    host = url.split("//", 1)[-1].split("/", 1)[0]
+    return "." in host and not host.endswith(".")
 
 
 def _load_demo():
@@ -84,9 +110,8 @@ def _goto(name: str):
 
 
 def _set_status(task_id: str, status: str):
-    member_id = st.session_state.get("chat_member")
-    db.update_task_status(task_id, status, member_id)
-    db.log_event(task_id, member_id, status)
+    actor_id, source = _actor()
+    db.set_task_status(task_id, status, actor_id, source)
     st.session_state["flash_status"] = {
         "task_id": task_id,
         "status": status,
@@ -105,12 +130,11 @@ def _send_reply(task_id: str):
         }
         st.session_state["nav"] = NAV[1]
         return
-    member_id = st.session_state.get("chat_member")
+    actor_id, source = _actor()
     tasks = db.get_tasks(st.session_state.get("project_id") or "")
     title = next((t["title"] for t in tasks if t["id"] == task_id), "Tugas")
     parsed = ai.parse_reply(text, title)
-    db.update_task_status(task_id, parsed["intent"], member_id, note=parsed["reason"])
-    db.log_event(task_id, member_id, parsed["intent"], parsed["reason"])
+    db.reply_task(task_id, parsed["intent"], parsed["reason"], actor_id, source)
     st.session_state["flash_status"] = {
         "task_id": task_id,
         "status": parsed["intent"],
@@ -119,24 +143,107 @@ def _send_reply(task_id: str):
     st.session_state["nav"] = NAV[1]
 
 
-def _mark_done(task_id: str):
+def _submit(task_id: str):
     url = (st.session_state.get(f"ev_{task_id}") or "").strip()
-    if not url:
+    hours_raw = st.session_state.get(f"hours_{task_id}")
+    actor_id, source = _actor()
+
+    if not _is_url_valid(url):
+        message = "Tautan bukti wajib diisi dan harus berupa alamat http(s) yang valid."
+    elif not hours_raw or float(hours_raw) <= 0:
+        message = "Jam kerja aktual wajib diisi lebih dari 0."
+    else:
+        task = db.get_task(task_id)
+        others = [
+            t
+            for t in db.get_tasks(st.session_state.get("project_id") or "")
+            if t["id"] != task_id and (t.get("evidence_url") or "").strip() == url
+        ]
+        if others:
+            message = (
+                "Tautan ini sudah dipakai tugas lain "
+                f"('{others[0]['title']}'). Setiap tugas butuh bukti sendiri."
+            )
+        else:
+            db.submit_task(task_id, url, float(hours_raw), actor_id, source)
+            st.session_state["flash_status"] = {
+                "task_id": task_id,
+                "status": "SUBMITTED",
+                "message": (
+                    f"Tugas '{task['title']}' dikumpulkan. Menunggu konfirmasi anggota lain "
+                    "sebelum masuk hitungan kontribusi."
+                ),
+            }
+            st.session_state["nav"] = NAV[1]
+            return
+
+    st.session_state["flash_status"] = {
+        "task_id": task_id,
+        "status": "error",
+        "message": message,
+    }
+    st.session_state["nav"] = NAV[1]
+
+
+def _verify(task_id: str):
+    actor_id, source = _actor()
+    task = db.get_task(task_id)
+    if not actor_id:
         st.session_state["flash_status"] = {
             "task_id": task_id,
             "status": "error",
-            "message": "Tautan bukti wajib diisi sebelum menandai selesai.",
+            "message": "Pilih anggota yang mengonfirmasi terlebih dahulu.",
         }
-        st.session_state["nav"] = NAV[1]
-        return
-    member_id = st.session_state.get("chat_member")
-    db.update_task_status(task_id, "DONE", member_id, evidence_url=url)
-    db.log_event(task_id, member_id, "DONE", url)
-    st.session_state["flash_status"] = {
-        "task_id": task_id,
-        "status": "DONE",
-        "message": "Tugas selesai dan buktinya tercatat.",
-    }
+    elif not db.verify_task(task_id, actor_id, source):
+        st.session_state["flash_status"] = {
+            "task_id": task_id,
+            "status": "error",
+            "message": "Kamu tidak bisa mengonfirmasi tugasmu sendiri.",
+        }
+    else:
+        st.session_state["flash_status"] = {
+            "task_id": task_id,
+            "status": "DONE",
+            "message": f"'{task['title']}' dikonfirmasi selesai dan masuk hitungan kontribusi.",
+        }
+    st.session_state["nav"] = NAV[1]
+
+
+def _reject(task_id: str):
+    reason = (st.session_state.get(f"rej_{task_id}") or "").strip()
+    actor_id, source = _actor()
+    if len(reason) < 5:
+        st.session_state["flash_status"] = {
+            "task_id": task_id,
+            "status": "error",
+            "message": "Tulis alasan penolakan (minimal 5 karakter).",
+        }
+    else:
+        db.reject_task(task_id, reason, actor_id, source)
+        st.session_state["flash_status"] = {
+            "task_id": task_id,
+            "status": "READY",
+            "message": "Tugas dikembalikan ke pemiliknya untuk diperbaiki.",
+        }
+    st.session_state["nav"] = NAV[1]
+
+
+def _reopen(task_id: str):
+    reason = (st.session_state.get(f"reopen_{task_id}") or "").strip()
+    actor_id, source = _actor()
+    if len(reason) < 5:
+        st.session_state["flash_status"] = {
+            "task_id": task_id,
+            "status": "error",
+            "message": "Tulis alasan pembukaan kembali (minimal 5 karakter).",
+        }
+    else:
+        db.reopen_task(task_id, reason, actor_id, source)
+        st.session_state["flash_status"] = {
+            "task_id": task_id,
+            "status": "READY",
+            "message": "Tugas dibuka kembali dan dicabut dari hitungan kontribusi.",
+        }
     st.session_state["nav"] = NAV[1]
 
 
@@ -175,18 +282,61 @@ def build_report(project: dict, df: pd.DataFrame, total_tasks: int) -> str:
     lines.append(f"Deadline: {project['deadline']}")
     lines.append(f"Total tugas: {total_tasks}")
     lines.append("")
-    lines.append("| Anggota | Selesai | Total | Jam selesai | Kontribusi |")
-    lines.append("|---|---|---|---|---|")
+    lines.append("| Anggota | Terverifikasi | Total | Jam aktual | Jam estimasi | Kontribusi |")
+    lines.append("|---|---|---|---|---|---|")
     for _, r in df.iterrows():
         lines.append(
-            f"| {r['name']} | {int(r['done'])} | {int(r['total'])} | {r['done_hours']} | {r['kontribusi']}% |"
+            f"| {r['name']} | {int(r['done'])} | {int(r['total'])} | "
+            f"{float(r['done_hours']):g} | {float(r['done_estimate']):g} | {r['kontribusi']}% |"
         )
     lines.append("")
     lines.append(f"**Total kontribusi: {df['kontribusi'].sum():.1f}%**")
+
+    if not df.empty and int(df["pending"].sum()) > 0:
+        lines.append("")
+        lines.append(f"Menunggu konfirmasi: {int(df['pending'].sum())} tugas (belum dihitung).")
+
+    verified = db.get_tasks(project["id"]) if project.get("id") else []
+    verifiers: dict[str, int] = {}
+    for t in verified:
+        if t["status"] == "DONE" and t.get("verified_by"):
+            verifiers[t["verified_by"]] = verifiers.get(t["verified_by"], 0) + 1
+    if verifiers:
+        names = {m["id"]: m["name"] for m in db.get_members(project["id"])}
+        names["legacy"] = "data lama (sebelum verifikasi)"
+        lines.append("")
+        lines.append(
+            "Konfirmasi oleh: "
+            + ", ".join(f"{names.get(v, v)} ({c})" for v, c in verifiers.items())
+        )
+
+    anomalies = db.get_anomalies(project["id"]) if project.get("id") else []
+    if anomalies:
+        lines.append("")
+        lines.append("**Sinyal perlu diperiksa:**")
+        for a in anomalies:
+            lines.append(f"- {a['jenis']}: {a['detail']}")
+
+    lines.append("")
+    lines.append(
+        "_Kontribusi dihitung dari jam kerja aktual pada tugas yang dikonfirmasi "
+        "anggota lain, bukan dari estimasi AI._"
+    )
     lines.append("")
     lines.append("_Dibuat otomatis oleh Rata._")
     return "\n".join(lines)
 
+
+# ------------------------------------------------------------------ identitas
+# Token anggota dibaca sekali dari URL (?t=...), lalu disimpan di sesi.
+_token = st.query_params.get("t")
+if _token and "actor_id" not in st.session_state:
+    _found = db.get_member_by_token(_token if isinstance(_token, str) else _token[0])
+    if _found:
+        st.session_state["actor_id"] = _found["id"]
+        st.session_state["actor_source"] = "token"
+        st.session_state["project_id"] = _found["project_id"]
+        st.session_state["project_select"] = _found["project_id"]
 
 # ------------------------------------------------------------------ sidebar
 with st.sidebar:
@@ -210,6 +360,37 @@ with st.sidebar:
 
     if st.button("Muat Data Demo", width="stretch", on_click=_load_demo):
         pass
+
+    st.divider()
+
+    actor_id, actor_source = _actor()
+    if actor_source == "token" and actor_id:
+        st.success(f"Bertindak sebagai **{_actor_name()}**")
+    else:
+        st.warning("Mode pratinjau ketua — aksi tercatat tanpa identitas anggota.")
+        pid_sel = current_project_id()
+        if pid_sel:
+            _members = db.get_members(pid_sel)
+            _names = {m["id"]: m["name"] for m in _members}
+            if _names:
+                if st.session_state.get("act_as") not in _names:
+                    st.session_state["act_as"] = next(iter(_names))
+                st.selectbox(
+                    "Simulasikan sebagai",
+                    list(_names),
+                    format_func=lambda x: _names[x],
+                    key="act_as",
+                )
+        st.caption("Bagikan tautan anggota agar status tercatat atas nama mereka.")
+
+    pid_links = current_project_id()
+    if pid_links and actor_source != "token":
+        with st.expander("Tautan anggota"):
+            st.caption("Bagikan hanya ke orang yang bersangkutan.")
+            for m in db.get_members(pid_links):
+                if m.get("token"):
+                    st.caption(f"**{m['name']}**")
+                    st.code(f"?t={m['token']}", language=None)
 
     st.divider()
     usage = db.get_ai_usage()
@@ -383,8 +564,8 @@ if nav == NAV[1]:
 
         c = st.columns(4)
         c[0].metric("Total tugas", stats["total"])
-        c[1].metric("Selesai", stats["done"])
-        c[2].metric("Berjalan", stats["running"])
+        c[1].metric("Terverifikasi", stats["done"])
+        c[2].metric("Menunggu konfirmasi", stats["pending"])
         c[3].metric("Butuh perhatian", stats["attention"])
 
         st.progress(stats["progress"])
@@ -394,9 +575,12 @@ if nav == NAV[1]:
             st.markdown("#### Kontribusi")
             if not df.empty and float(df["done_hours"].sum()) > 0:
                 st.bar_chart(df.set_index("name")["kontribusi"], height=260)
-                st.caption("Dihitung dari jam tugas yang benar-benar selesai.")
+                st.caption("Dihitung dari jam kerja terverifikasi, bukan estimasi AI.")
             else:
-                st.info("Belum ada tugas yang selesai. Kontribusi muncul setelah tugas pertama ditandai selesai dengan bukti.")
+                st.info(
+                    "Belum ada tugas terverifikasi. Kontribusi muncul setelah tugas "
+                    "dikumpulkan dengan bukti dan dikonfirmasi anggota lain."
+                )
 
         with right:
             st.markdown("#### Tugas")
@@ -431,11 +615,22 @@ if nav == NAV[1]:
         if not members:
             st.info("Belum ada anggota.")
         else:
+            actor_id, actor_source = _actor()
             names = {m["id"]: m["name"] for m in members}
-            member_id = st.selectbox(
-                "Pilih anggota", list(names), format_func=lambda x: names[x], key="chat_member"
-            )
-            mine = [t for t in tasks if t["assignee_id"] == member_id]
+            mine = [t for t in tasks if t["assignee_id"] == actor_id]
+            pending = [
+                t
+                for t in tasks
+                if t["status"] == "SUBMITTED" and t["assignee_id"] != actor_id
+            ]
+
+            if actor_id:
+                st.caption(
+                    f"Menampilkan tugas milik **{names.get(actor_id, 'anggota ini')}** "
+                    f"· identitas: {'token' if actor_source == 'token' else 'pratinjau'}"
+                )
+            else:
+                st.caption("Pilih anggota di sidebar untuk melihat tugasnya.")
 
             if not mine:
                 st.caption("Anggota ini belum punya tugas.")
@@ -451,9 +646,33 @@ if nav == NAV[1]:
                         st.chat_message("user").markdown(str(t["note"]))
                     if t.get("evidence_url"):
                         st.caption(f"Bukti: {t['evidence_url']}")
+                    if t.get("actual_hours"):
+                        st.caption(f"Jam aktual dilaporkan: {t['actual_hours']:g} jam")
+                    if t.get("reject_reason"):
+                        st.warning(f"Catatan verifikator: {t['reject_reason']}")
 
                     if t["status"] == "DONE":
-                        st.success("Tugas ini sudah selesai dan buktinya tercatat.")
+                        verifier = t.get("verified_by")
+                        verifier_label = (
+                            "data lama (sebelum verifikasi)"
+                            if verifier == "legacy"
+                            else names.get(verifier, "anggota lain")
+                        )
+                        st.success(f"Selesai dan terverifikasi oleh {verifier_label}.")
+                        with st.expander("Buka kembali tugas ini"):
+                            st.text_input(
+                                "Alasan pembukaan kembali",
+                                key=f"reopen_{t['id']}",
+                                placeholder="Contoh: file yang dikirim salah versi",
+                            )
+                            st.button(
+                                "Buka kembali",
+                                key=f"reopenbtn_{t['id']}",
+                                on_click=_reopen,
+                                args=(t["id"],),
+                            )
+                    elif t["status"] == "SUBMITTED":
+                        st.info("Menunggu konfirmasi anggota lain sebelum dihitung.")
                     else:
                         b1, b2, b3 = st.columns(3)
                         b1.button(
@@ -491,17 +710,91 @@ if nav == NAV[1]:
                         )
 
                         st.text_input(
-                            "Tautan bukti (wajib untuk menyelesaikan)",
+                            "Tautan bukti (wajib)",
                             key=f"ev_{t['id']}",
                             value=t.get("evidence_url") or "",
                             placeholder="https://docs.google.com/...",
                         )
+                        st.number_input(
+                            "Jam kerja aktual (wajib)",
+                            min_value=0.0,
+                            max_value=200.0,
+                            step=0.5,
+                            key=f"hours_{t['id']}",
+                            value=float(t.get("actual_hours") or 0.0),
+                        )
                         st.button(
-                            "Tandai SELESAI",
+                            "Kumpulkan untuk verifikasi",
                             key=f"done_{t['id']}",
-                            on_click=_mark_done,
+                            on_click=_submit,
                             args=(t["id"],),
                         )
+
+            st.divider()
+            st.markdown("#### Menunggu konfirmasi")
+            if not pending:
+                st.caption("Tidak ada tugas yang menunggu konfirmasi.")
+            if not actor_id:
+                st.caption("Pilih anggota di sidebar untuk bisa mengonfirmasi.")
+            for t in pending:
+                with st.expander(f"🟪 {t['title']} · {t['assignee_name']}"):
+                    st.caption(
+                        f"Bukti: {t['evidence_url']}  \n"
+                        f"Jam dilaporkan: {t.get('actual_hours') or 0:g} jam "
+                        f"(estimasi {t['estimate_hours']} jam)"
+                    )
+                    d1, d2 = st.columns(2)
+                    d1.button(
+                        "Konfirmasi selesai",
+                        key=f"verify_{t['id']}",
+                        width="stretch",
+                        on_click=_verify,
+                        args=(t["id"],),
+                    )
+                    st.text_input(
+                        "Alasan penolakan (jika dikembalikan)",
+                        key=f"rej_{t['id']}",
+                        placeholder="Contoh: bukti hanya tautan kosong",
+                    )
+                    d2.button(
+                        "Tolak & kembalikan",
+                        key=f"reject_{t['id']}",
+                        width="stretch",
+                        on_click=_reject,
+                        args=(t["id"],),
+                    )
+
+        st.divider()
+        st.markdown("#### Rekam Jejak")
+        anomalies = db.get_anomalies(pid)
+        if anomalies:
+            with st.expander(f"⚠️ {len(anomalies)} sinyal perlu diperiksa", expanded=True):
+                for a in anomalies:
+                    st.caption(f"**{a['jenis']}** — {a['detail']}")
+        events = db.get_events(pid)
+        if events:
+            ev_df = pd.DataFrame(
+                [
+                    {
+                        "Waktu": str(e["created_at"])[:19],
+                        "Aktor": e["actor_name"] or "—",
+                        "Aksi": STATUS_LABEL.get(e["type"], e["type"]),
+                        "Tugas": e["task_title"],
+                        "Detail": (e["detail"] or "")[:60],
+                        "Sumber": (
+                            "token"
+                            if e["actor_source"] == "token"
+                            else "sistem"
+                            if e["actor_source"] == "system"
+                            else "pratinjau"
+                        ),
+                    }
+                    for e in events
+                ]
+            )
+            st.dataframe(ev_df, hide_index=True, width="stretch")
+        else:
+            st.caption("Belum ada aktivitas tercatat.")
 
 # ------------------------------------------------------------------ tab 3
 if nav == NAV[2]:
@@ -517,8 +810,16 @@ if nav == NAV[2]:
         st.subheader("Laporan Kontribusi")
         st.caption(f"{project['title']} · deadline {project['deadline']}")
 
-        show = df[["name", "done", "total", "done_hours", "kontribusi"]].copy()
-        show.columns = ["Anggota", "Selesai", "Total tugas", "Jam selesai", "Kontribusi (%)"]
+        show = df[["name", "done", "total", "pending", "done_hours", "done_estimate", "kontribusi"]].copy()
+        show.columns = [
+            "Anggota",
+            "Terverifikasi",
+            "Total tugas",
+            "Menunggu konfirmasi",
+            "Jam aktual",
+            "Jam estimasi",
+            "Kontribusi (%)",
+        ]
         st.dataframe(show, hide_index=True, width="stretch")
 
         total = float(df["kontribusi"].sum()) if not df.empty else 0.0
