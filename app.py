@@ -13,6 +13,9 @@ db.init_db()
 
 NAV = ["1 · Buat Proyek", "2 · Dashboard", "3 · Laporan"]
 
+MEMBER_DEFAULTS = ["Budi", "Sinta", "Raka", "Dewi", "Ayu"]
+FORM_FIELDS = ["title", "desc", "n", "deadline"] + [f"member_{i}" for i in range(5)]
+
 STATUS_EMOJI = {
     "TODO": "⬜",
     "READY": "🟦",
@@ -48,6 +51,17 @@ def _clear_draft():
     st.session_state.pop("draft", None)
 
 
+def _reset_form():
+    st.session_state["title_store"] = ""
+    st.session_state["desc_store"] = ""
+    st.session_state["n_store"] = 3
+    st.session_state["deadline_store"] = date.today() + timedelta(days=7)
+    st.session_state["member_store"] = list(MEMBER_DEFAULTS)
+    for field in FORM_FIELDS:
+        st.session_state.pop(field, None)
+    st.session_state.pop("file_note", None)
+
+
 def _save_draft():
     draft = st.session_state.get("draft")
     if not draft:
@@ -61,9 +75,7 @@ def _save_draft():
     st.session_state["project_id"] = pid
     st.session_state["project_select"] = pid
     st.session_state.pop("draft", None)
-    st.session_state["desc_store"] = ""
-    st.session_state.pop("desc_input", None)
-    st.session_state.pop("file_note", None)
+    _reset_form()
     st.session_state["flash"] = "Proyek berhasil dibuat. Buka tab Dashboard."
 
 
@@ -145,7 +157,7 @@ def _load_file():
         st.session_state["file_note"] = ("warning", note)
     else:
         st.session_state["desc_store"] = text
-        st.session_state.pop("desc_input", None)
+        st.session_state.pop("desc", None)
         st.session_state["file_note"] = (
             "success",
             f"{up.name} terbaca: {len(text)} karakter. Periksa kolom deskripsi sebelum membuat rencana.",
@@ -154,7 +166,7 @@ def _load_file():
 
 def _clear_file():
     st.session_state["desc_store"] = ""
-    st.session_state.pop("desc_input", None)
+    st.session_state.pop("desc", None)
     st.session_state["file_note"] = ("info", "Isi file dihapus dari deskripsi.")
 
 
@@ -228,7 +240,24 @@ if nav == NAV[0]:
         )
 
     with st.container(border=True):
-        title = st.text_input("Judul proyek", placeholder="Makalah Manajemen Strategi")
+        for key, default in (
+            ("title_store", ""),
+            ("desc_store", ""),
+            ("n_store", 3),
+            ("deadline_store", date.today() + timedelta(days=7)),
+            ("member_store", list(MEMBER_DEFAULTS)),
+        ):
+            if key not in st.session_state:
+                st.session_state[key] = default
+        if "title" not in st.session_state:
+            st.session_state["title"] = st.session_state["title_store"]
+
+        title = st.text_input(
+            "Judul proyek",
+            key="title",
+            placeholder="Makalah Manajemen Strategi",
+        )
+        st.session_state["title_store"] = title
 
         st.markdown("**Bahan tugas**")
         st.caption("Unggah file tugas (PDF, DOCX, TXT, MD) atau tempel deskripsinya langsung.")
@@ -254,25 +283,40 @@ if nav == NAV[0]:
 
         if "desc_store" not in st.session_state:
             st.session_state["desc_store"] = ""
-        if "desc_input" not in st.session_state:
-            st.session_state["desc_input"] = st.session_state["desc_store"]
+        if "desc" not in st.session_state:
+            st.session_state["desc"] = st.session_state["desc_store"]
 
         desc = st.text_area(
             "Deskripsi tugas",
-            key="desc_input",
+            key="desc",
             height=170,
             placeholder="Contoh: Makalah 20 halaman tentang analisis strategi perusahaan teknologi",
         )
         st.session_state["desc_store"] = desc
 
-        deadline = st.date_input("Deadline", value=date.today() + timedelta(days=7))
-        n = int(st.number_input("Jumlah anggota", min_value=1, max_value=5, value=3))
+        if "deadline" not in st.session_state:
+            st.session_state["deadline"] = st.session_state["deadline_store"]
+        deadline = st.date_input(
+            "Deadline",
+            key="deadline",
+        )
+        st.session_state["deadline_store"] = deadline
 
-        defaults = ["Budi", "Sinta", "Raka", "Dewi", "Ayu"]
+        if "n" not in st.session_state:
+            st.session_state["n"] = st.session_state["n_store"]
+        n = int(st.number_input("Jumlah anggota", min_value=1, max_value=5, key="n"))
+        st.session_state["n_store"] = n
+
         cols = st.columns(n)
         names = []
         for i in range(n):
-            names.append(cols[i].text_input(f"Anggota {i + 1}", value=defaults[i], key=f"member_{i}"))
+            field = f"member_{i}"
+            if field not in st.session_state:
+                st.session_state[field] = st.session_state["member_store"][i]
+            names.append(cols[i].text_input(f"Anggota {i + 1}", key=field))
+        st.session_state["member_store"] = list(names) + list(
+            st.session_state["member_store"][n:]
+        )
 
         if st.button("Buat Rencana dengan AI", type="primary"):
             clean = [x.strip() for x in names if x.strip()]
