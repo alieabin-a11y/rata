@@ -1,10 +1,13 @@
+import os
 import sqlite3
 import uuid
 from datetime import datetime
 
 import pandas as pd
 
-DB_PATH = "rata.db"
+DB_PATH = os.environ.get("RATA_DB_PATH") or (
+    "/tmp/rata.db" if os.environ.get("SPACE_ID") else "rata.db"
+)
 
 
 def new_id() -> str:
